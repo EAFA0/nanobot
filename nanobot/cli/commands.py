@@ -751,6 +751,11 @@ def _run_gateway(
     health_server_enabled: bool = True,
 ) -> None:
     """Shared gateway runtime; ``open_browser_url`` opens a tab once channels are up."""
+<<<<<<< HEAD
+=======
+    import nanobot.thinklog  # noqa: F401
+    from nanobot.agent.tools.cron import CronTool
+>>>>>>> b07a9ce2 (feat: migrate thinklog sidecar + add /log and /think commands)
     from nanobot.agent.tools.message import MessageTool
     from nanobot.bus.queue import MessageBus
     from nanobot.bus.runtime_events import RuntimeEventBus

@@ -117,6 +117,20 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "shield",
         "[list|approve <code>|deny <code>|revoke <user_id>]",
     ),
+    BuiltinCommandSpec(
+        "/log",
+        "Show trace log",
+        "Show assistant traces with reasoning/tool calls.",
+        "list",
+        "[count] [start]",
+    ),
+    BuiltinCommandSpec(
+        "/think",
+        "Show reasoning",
+        "Display reasoning_content of a trace entry.",
+        "brain",
+        "[idx] [char_off]
+    ),
 )
 
 
@@ -695,6 +709,162 @@ def build_help_text() -> str:
     return "\n".join(lines)
 
 
+async def cmd_log(ctx: CommandContext) -> OutboundMessage:
+    """Show assistant traces (reasoning/tool calls) from the sidecar JSONL."""
+    args = ctx.args.strip()
+    count = 5
+    start = 0
+    if args:
+        parts = args.split()
+        try:
+            count = int(parts[0])
+            if len(parts) > 1:
+                start = int(parts[1])
+        except ValueError:
+            pass
+    if count <= 0:
+        count = 5
+
+    from nanobot.session.manager import SessionManager
+
+    safe_key = SessionManager.safe_key(ctx.key)
+    path = ctx.loop.sessions.workspace / "sessions" / f"{safe_key}.fulltraces.jsonl"
+
+    if not path.exists():
+        return OutboundMessage(
+            channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+            content="No traces found for this session.",
+            metadata=dict(ctx.msg.metadata or {}),
+        )
+
+    import json
+
+    entries: list[dict] = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                entries.append(json.loads(line))
+
+    total = len(entries)
+    if start >= total:
+        return OutboundMessage(
+            channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+            content="No more entries.",
+            metadata=dict(ctx.msg.metadata or {}),
+        )
+
+    reversed_entries = list(reversed(entries))
+    page = reversed_entries[start:start + count]
+
+    lines: list[str] = []
+    for i, entry in enumerate(page):
+        n = total - start - i
+        ts = entry.get("timestamp", "")
+        hhmm = ts[11:16] if len(ts) >= 16 else ts
+        tool_calls = entry.get("tool_calls") or []
+        if tool_calls:
+            tool_names = ",".join(
+                tc.get("function", {}).get("name", "?") for tc in tool_calls
+            )
+            info = tool_names
+        else:
+            content = entry.get("content", "") or ""
+            if len(content) > 50:
+                content = content[:50] + "…"
+            info = content
+        lines.append(f"[#{n}] {hhmm} | {info}")
+
+    footer = f"共 {total} 条 | /log {count} {start + count}"
+    content = "\n".join(lines) + "\n" + footer
+
+    return OutboundMessage(
+        channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+        content=content,
+        metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+    )
+
+
+async def cmd_think(ctx: CommandContext) -> OutboundMessage:
+    """Display reasoning_content from a trace entry."""
+    args = ctx.args.strip()
+    idx = 1
+    char_off = 0
+    if args:
+        parts = args.split()
+        try:
+            idx = int(parts[0])
+            if len(parts) > 1:
+                char_off = int(parts[1])
+        except ValueError:
+            pass
+    if idx < 1:
+        idx = 1
+
+    from nanobot.session.manager import SessionManager
+
+    safe_key = SessionManager.safe_key(ctx.key)
+    path = ctx.loop.sessions.workspace / "sessions" / f"{safe_key}.fulltraces.jsonl"
+
+    if not path.exists():
+        return OutboundMessage(
+            channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+            content="No traces found.",
+            metadata=dict(ctx.msg.metadata or {}),
+        )
+
+    import json
+
+    entries: list[dict] = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                entries.append(json.loads(line))
+
+    total = len(entries)
+    if idx > total:
+        return OutboundMessage(
+            channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+            content=f"Index out of range. Total entries: {total}",
+            metadata=dict(ctx.msg.metadata or {}),
+        )
+
+    entry = entries[-idx]
+    reasoning = entry.get("reasoning_content") or ""
+    if not reasoning:
+        return OutboundMessage(
+            channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+            content=f"[#{total - idx + 1}] (no reasoning_content)",
+            metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+        )
+
+    total_chars = len(reasoning)
+    if char_off >= total_chars:
+        char_off = max(0, total_chars - 1500)
+
+    ts = entry.get("timestamp", "")
+    date_hhmm = ts[:16] if len(ts) >= 16 else ts
+
+    snippet = reasoning[char_off:char_off + 1500]
+
+    lines = [f"[#{total - idx + 1}] {date_hhmm}"]
+    lines.append(snippet)
+
+    if total_chars > 1500:
+        end_idx = min(char_off + 1500, total_chars)
+        lines.append(
+            f"[{end_idx}/{total_chars} chars, /think {idx} {char_off + 1500} 继续]"
+        )
+
+    content = "\n".join(lines)
+    return OutboundMessage(
+        channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+        content=content,
+        metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
+    )
+
+
 def register_builtin_commands(router: CommandRouter) -> None:
     """Register the default set of slash commands."""
     router.priority("/stop", cmd_stop)
@@ -717,3 +887,7 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.exact("/help", cmd_help)
     router.exact("/pairing", cmd_pairing)
     router.prefix("/pairing ", cmd_pairing)
+    router.exact("/log", cmd_log)
+    router.prefix("/log ", cmd_log)
+    router.exact("/think", cmd_think)
+    router.prefix("/think ", cmd_think)
