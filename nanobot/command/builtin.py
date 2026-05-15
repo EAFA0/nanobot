@@ -8,6 +8,7 @@ import sys
 import time
 from contextlib import suppress
 from dataclasses import dataclass
+import json
 
 from nanobot import __version__
 from nanobot.bus.events import OutboundMessage
@@ -709,6 +710,41 @@ def build_help_text() -> str:
     return "\n".join(lines)
 
 
+def _tool_call_summary(tc: dict) -> str:
+    func = tc.get("function", {})
+    name = func.get("name", "?")
+    raw_args = func.get("arguments")
+    if not raw_args:
+        return name
+    if isinstance(raw_args, str):
+        try:
+            args = json.loads(raw_args)
+        except json.JSONDecodeError:
+            return f"{name}:{raw_args[:60]}"
+    elif isinstance(raw_args, dict):
+        args = raw_args
+    else:
+        return f"{name}:{str(raw_args)[:60]}"
+
+    if name == "exec":
+        val = args.get("command", "")
+        if val:
+            return f"{name}:{val[:80]}"
+    elif name in ("read_file", "write_file", "edit_file"):
+        val = args.get("path", "")
+        if val:
+            return f"{name}:{val}"
+    elif name in ("grep", "glob"):
+        val = args.get("pattern", "")
+        if val:
+            return f"{name}:{val}"
+
+    args_str = json.dumps(args, ensure_ascii=False)
+    if len(args_str) > 60:
+        args_str = args_str[:60] + "…"
+    return f"{name}:{args_str}"
+
+
 async def cmd_log(ctx: CommandContext) -> OutboundMessage:
     """Show assistant traces (reasoning/tool calls) from the sidecar JSONL."""
     args = ctx.args.strip()
@@ -764,10 +800,7 @@ async def cmd_log(ctx: CommandContext) -> OutboundMessage:
         hhmm = ts[11:16] if len(ts) >= 16 else ts
         tool_calls = entry.get("tool_calls") or []
         if tool_calls:
-            tool_names = ",".join(
-                tc.get("function", {}).get("name", "?") for tc in tool_calls
-            )
-            info = tool_names
+            info = " | ".join(_tool_call_summary(tc) for tc in tool_calls)
         else:
             content = entry.get("content", "") or ""
             if len(content) > 50:

@@ -84,8 +84,8 @@ class TestCmdLog:
                 "content": "",
                 "reasoning_content": "",
                 "tool_calls": [
-                    {"function": {"name": "read_file"}},
-                    {"function": {"name": "bash"}},
+                    {"function": {"name": "read_file", "arguments": {"path": "/tmp/test.txt"}}},
+                    {"function": {"name": "exec", "arguments": "{\"command\": \"ls -la\"}"}},
                 ],
             },
         ])
@@ -93,7 +93,39 @@ class TestCmdLog:
         out = await cmd_log(ctx)
         assert "[#1]" in out.content
         assert "10:31" in out.content
-        assert "read_file,bash" in out.content
+        assert "read_file:/tmp/test.txt | exec:ls -la" in out.content
+
+    @pytest.mark.asyncio
+    async def test_entry_with_tool_call_summaries(self, tmp_path: Path) -> None:
+        _write_sidecar(tmp_path, "cli:direct", [
+            {
+                "timestamp": "2026-05-15T10:32:00",
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "",
+                "tool_calls": [
+                    {"function": {"name": "read_file", "arguments": {"path": "/home/file.py"}}},
+                    {"function": {"name": "write_file", "arguments": {"path": "/home/out.txt"}}},
+                    {"function": {"name": "edit_file", "arguments": "{\"path\": \"/home/file.py\"}"}},
+                    {"function": {"name": "grep", "arguments": {"pattern": "def test"}}},
+                    {"function": {"name": "glob", "arguments": {"pattern": "**/*.py"}}},
+                    {"function": {"name": "exec", "arguments": "{\"command\": \"cd /home && ls -la\"}"}},
+                    {"function": {"name": "no_arg_tool"}},
+                    {"function": {"name": "other_tool", "arguments": {"key1": "val1", "key2": "val2"}}},
+                ],
+            },
+        ])
+        ctx = _make_ctx("/log", tmp_path)
+        out = await cmd_log(ctx)
+        assert "read_file:/home/file.py" in out.content
+        assert "write_file:/home/out.txt" in out.content
+        assert "edit_file:/home/file.py" in out.content
+        assert "grep:def test" in out.content
+        assert "glob:**/*.py" in out.content
+        assert "exec:cd /home && ls -la" in out.content
+        assert "no_arg_tool" in out.content
+        assert "other_tool:" in out.content
+        assert " | " in out.content
 
     @pytest.mark.asyncio
     async def test_multi_entry_reverse_order(self, tmp_path: Path) -> None:
