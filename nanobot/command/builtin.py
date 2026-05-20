@@ -130,7 +130,7 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "Show reasoning",
         "Display reasoning_content of a trace entry.",
         "brain",
-        "[idx] [char_off]
+        "[idx] [char_off]"
     ),
 )
 
