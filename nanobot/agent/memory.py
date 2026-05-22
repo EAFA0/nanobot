@@ -849,6 +849,7 @@ class Consolidator:
         self,
         session: Session,
         *,
+        force: bool = False,
         replay_max_messages: int | None = None,
     ) -> None:
         """Loop: archive old messages until prompt fits within safe budget.
@@ -884,7 +885,7 @@ class Consolidator:
             if estimated <= 0:
                 self._persist_last_summary(session, last_summary)
                 return
-            if estimated < budget:
+            if estimated < budget and not force:
                 unconsolidated_count = len(session.messages) - session.last_consolidated
                 logger.debug(
                     "Token consolidation idle {}: {}/{} via {}, msgs={}",

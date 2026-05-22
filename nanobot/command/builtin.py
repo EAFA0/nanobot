@@ -82,6 +82,12 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "<goal>",
     ),
     BuiltinCommandSpec(
+        "/compact",
+        "Compact conversation",
+        "Force token-budget consolidation for the current session.",
+        "compress",
+    ),
+    BuiltinCommandSpec(
         "/dream",
         "Run Dream",
         "Manually trigger memory consolidation.",
@@ -386,6 +392,37 @@ async def cmd_dream(ctx: CommandContext) -> OutboundMessage:
     asyncio.create_task(_run_dream())
     return OutboundMessage(
         channel=msg.channel, chat_id=msg.chat_id, content="Dreaming...",
+    )
+
+
+async def cmd_compact(ctx: CommandContext) -> OutboundMessage:
+    """Force token-budget consolidation for the current session."""
+    import time
+
+    loop = ctx.loop
+    msg = ctx.msg
+    session = ctx.session or loop.sessions.get_or_create(ctx.key)
+
+    async def _run_compact():
+        t0 = time.monotonic()
+        try:
+            await loop.consolidator.maybe_consolidate_by_tokens(
+                session,
+                force=True,
+                replay_max_messages=loop._max_messages,
+            )
+            elapsed = time.monotonic() - t0
+            content = f"Compacted in {elapsed:.1f}s."
+        except Exception as e:
+            elapsed = time.monotonic() - t0
+            content = f"Compact failed after {elapsed:.1f}s: {e}"
+        await loop.bus.publish_outbound(OutboundMessage(
+            channel=msg.channel, chat_id=msg.chat_id, content=content,
+        ))
+
+    asyncio.create_task(_run_compact())
+    return OutboundMessage(
+        channel=msg.channel, chat_id=msg.chat_id, content="Compacting...",
     )
 
 
@@ -911,6 +948,7 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.prefix("/history ", cmd_history)
     router.exact("/goal", cmd_goal)
     router.prefix("/goal ", cmd_goal)
+    router.exact("/compact", cmd_compact)
     router.exact("/dream", cmd_dream)
     router.exact("/dream-log", cmd_dream_log)
     router.prefix("/dream-log ", cmd_dream_log)
