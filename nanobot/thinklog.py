@@ -20,6 +20,22 @@ def _extract_thinking_blocks(content: str) -> list[str]:
     return re.findall(r"<thinking>(.*?)</thinking>", content, re.DOTALL)
 
 
+def _archive_sidecar(sidecar_path, reason=""):
+    """Rename sidecar to a timestamped archive, preserving old traces."""
+    if not sidecar_path.exists():
+        return
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    archive_path = sidecar_path.with_name(
+        f"{sidecar_path.stem}.{ts}.jsonl"
+    )
+    sidecar_path.rename(archive_path)
+    print(
+        f"[thinklog] archived sidecar → {archive_path.name}"
+        + (f" ({reason})" if reason else ""),
+        file=sys.stderr,
+    )
+
+
 def _patch():
     from nanobot.session.manager import SessionManager
 
@@ -35,6 +51,12 @@ def _patch():
             # for the fast path, but fall back to counting sidecar lines on
             # cold start (after service restart the tracker is lost).
             last_idx = getattr(session, "_thinklog_last_idx", 0)
+
+            # Detect /new: the session was cleared (message count dropped)
+            # but our tracker still points into the stale sidecar.
+            if last_idx > len(session.messages):
+                _archive_sidecar(sidecar_path, reason="session cleared (/new)")
+
             if last_idx == 0 and sidecar_path.exists():
                 # Count qualifying messages already persisted in the sidecar.
                 try:
@@ -59,6 +81,16 @@ def _patch():
                         if q_seen == sidecar_lines:
                             last_idx = i + 1
                             break
+
+                # If the alignment loop didn't break (q_seen < sidecar_lines),
+                # the session has fewer qualifying messages than the sidecar
+                # expects.  This happens after /new + service restart.
+                # Archive the stale sidecar to avoid duplicate traces.
+                if last_idx == 0:
+                    _archive_sidecar(
+                        sidecar_path,
+                        reason="cold-start misalignment (probable /new + restart)",
+                    )
 
             new_messages = session.messages[last_idx:]
 
