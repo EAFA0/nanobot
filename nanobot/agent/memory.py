@@ -900,7 +900,10 @@ class Consolidator:
 
             for round_num in range(self._MAX_CONSOLIDATION_ROUNDS):
                 if estimated <= target:
-                    break
+                    if round_num == 0 and force:
+                        pass  # force at least one consolidation round
+                    else:
+                        break
 
                 boundary = self.pick_consolidation_boundary(session, max(1, estimated - target))
                 if boundary is None:
