@@ -898,6 +898,9 @@ class Consolidator:
                 self._persist_last_summary(session, last_summary)
                 return
 
+            if force:
+                target = min(target, int(estimated * self.consolidation_ratio))
+
             for round_num in range(self._MAX_CONSOLIDATION_ROUNDS):
                 if estimated <= target:
                     if round_num == 0 and force:
