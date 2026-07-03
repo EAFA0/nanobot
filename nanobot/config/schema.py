@@ -162,6 +162,38 @@ class AgentDefaults(Base):
         serialization_alias="consolidationRatio",
     )  # Consolidation target ratio (0.5 = 50% of budget retained after compression)
     dream: DreamConfig = Field(default_factory=DreamConfig)
+    runner_backend: str = "native"  # "native" | "codex-sdk" | "claude-sdk"
+    sdk_runner: "SDKRunnerConfig" = Field(default_factory=lambda: SDKRunnerConfig())
+
+
+class SDKRunnerConfig(Base):
+    """Configuration for SDK-based runner backends (codex-sdk / claude-sdk).
+
+    These backends delegate turn execution to external coding agent SDKs
+    instead of the native AgentRunner.
+    """
+
+    proxy: str | None = None  # HTTP proxy for SDK subprocess API calls, e.g. "http://10.3.42.223:8989"
+
+    # --- Codex SDK settings ---
+    codex_bin: str | None = None  # Path to codex binary (default: SDK-bundled)
+    codex_model: str | None = None  # Default: use codex binary's built-in model
+    codex_sandbox: str = "workspace_write"  # read_only | workspace_write | full_access
+    codex_approval_mode: str = "auto_review"  # auto_review | deny_all
+    codex_base_instructions: str | None = None
+
+    # --- Claude SDK settings ---
+    claude_cli_path: str | None = None  # Path to claude/relay/seed binary (default: find in PATH)
+    claude_model: str = "claude-sonnet-4-5"
+    claude_permission_mode: str = "acceptEdits"  # default | acceptEdits | plan | bypassPermissions | dontAsk | auto
+    claude_api_key: str | None = None  # falls back to ANTHROPIC_API_KEY env
+    claude_base_url: str | None = None  # falls back to ANTHROPIC_BASE_URL env
+    claude_max_turns: int = 200
+    claude_system_prompt: str | None = None
+
+    # --- Session management ---
+    session_idle_timeout_minutes: int = Field(default=60, ge=1)
+    turn_timeout_s: int = Field(default=120, ge=10)  # Max seconds per SDK turn before timeout error
 
 
 class AgentsConfig(Base):

@@ -228,6 +228,8 @@ class AgentLoop:
         runtime_model_publisher: Callable[[str, str | None], None] | None = None,
         restart_mode: str = "auto",
         local_trigger_store: Any | None = None,
+        runner_backend: str = "native",
+        sdk_runner_config: Any | None = None,
     ):
         from nanobot.config.schema import ToolsConfig
 
@@ -292,6 +294,10 @@ class AgentLoop:
         # shared by this loop, so tools resolve the active state via contextvars.
         self._file_state_store = FileStateStore()
         self.runner = AgentRunner(provider)
+        self._runner_backend_default = runner_backend
+        self._sdk_runner_config = sdk_runner_config
+        self._session_runner_backends: dict[str, str] = {}
+        self._sdk_runners: dict[str, Any] = {}  # backend_name → SDKRunner (lazy)
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
@@ -423,12 +429,44 @@ class AgentLoop:
             restart_mode=config.gateway.restart_mode,
             provider_snapshot_loader=provider_snapshot_loader,
             preset_snapshot_loader=preset_snapshot_loader,
+            runner_backend=defaults.runner_backend,
+            sdk_runner_config=defaults.sdk_runner,
             **extra,
         )
 
     def _sync_subagent_runtime_limits(self) -> None:
         """Keep subagent runtime limits aligned with mutable loop settings."""
         self.subagents.max_iterations = self.max_iterations
+
+    def _effective_runner_backend(self, session_key: str) -> str:
+        """Resolve runner backend: per-session override → global default."""
+        return self._session_runner_backends.get(session_key, self._runner_backend_default)
+
+    def _get_sdk_runner(self, backend: str) -> Any:
+        """Lazy-create SDKRunner for the given backend name."""
+        if backend in self._sdk_runners:
+            return self._sdk_runners[backend]
+        from nanobot.agent.sdk_runner import SDKRunner
+        from nanobot.config.schema import SDKRunnerConfig
+
+        config = self._sdk_runner_config or SDKRunnerConfig()
+
+        if backend == "codex-sdk":
+            from nanobot.agent.sdk_runner.codex import CodexSDKRunner
+            self._sdk_runners[backend] = CodexSDKRunner(config)
+        elif backend == "claude-sdk":
+            from nanobot.agent.sdk_runner.claude import ClaudeSDKRunner
+            self._sdk_runners[backend] = ClaudeSDKRunner(config)
+        else:
+            raise ValueError(f"Unknown SDK backend: {backend}")
+        return self._sdk_runners[backend]
+
+    def set_session_runner_backend(self, session_key: str, backend: str) -> None:
+        """Set per-session backend override."""
+        self._session_runner_backends[session_key] = backend
+
+    def get_session_runner_backend(self, session_key: str) -> str:
+        return self._effective_runner_backend(session_key)
 
     def _apply_provider_snapshot(
         self,
@@ -871,7 +909,12 @@ class AgentLoop:
 
         session_metadata = session.metadata if session is not None else None
         try:
-            result = await self.runner.run(AgentRunSpec(
+            runner_backend = self._effective_runner_backend(active_session_key)
+            if runner_backend == "native":
+                runner = self.runner
+            else:
+                runner = self._get_sdk_runner(runner_backend)
+            result = await runner.run(AgentRunSpec(
                 initial_messages=initial_messages,
                 tools=tools or self.tools,
                 model=self.model,
@@ -943,6 +986,10 @@ class AgentLoop:
                         self._schedule_background,
                         active_session_keys=self._pending_queues.keys(),
                     )
+                    if self._sdk_runners and self._sdk_runner_config:
+                        idle_s = self._sdk_runner_config.session_idle_timeout_minutes * 60
+                        for r in self._sdk_runners.values():
+                            await r.evict_stale(idle_s)
                     continue
                 except asyncio.CancelledError:
                     # Preserve real task cancellation so shutdown can complete cleanly.
@@ -1196,6 +1243,12 @@ class AgentLoop:
             except (RuntimeError, BaseExceptionGroup):
                 logger.debug("MCP server '{}' cleanup error (can be ignored)", name)
         self._mcp_stacks.clear()
+        for r in self._sdk_runners.values():
+            try:
+                await r.shutdown()
+            except Exception:
+                logger.exception("SDK runner shutdown error")
+        self._sdk_runners.clear()
 
     def _schedule_background(self, coro) -> None:
         """Schedule a coroutine as a tracked background task (drained on shutdown)."""

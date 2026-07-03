@@ -1,0 +1,261 @@
+"""Codex SDK runner — drives the openai-codex AsyncCodex SDK.
+
+One shared AsyncCodex instance, multiple threads multiplexed.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import time
+from typing import Any, Awaitable, Callable
+
+from loguru import logger
+
+from nanobot.agent.sdk_runner.base import SDKRunner, _TurnResult
+
+
+class CodexSDKRunner(SDKRunner):
+    """SDK runner backed by the Codex / Coco app-server."""
+
+    backend_name = "codex-sdk"
+
+    def __init__(self, config: Any):
+        self._config = config
+        self._turn_timeout_s = getattr(config, "turn_timeout_s", 120)
+        self._codex: Any = None  # AsyncCodex
+        self._codex_lock = asyncio.Lock()
+        self._threads: dict[str, Any] = {}  # session_key → Thread
+        self._active_turns: dict[str, Any] = {}  # session_key → TurnHandle
+        self._last_activity: dict[str, float] = {}
+
+    async def _ensure_codex(self) -> Any:
+        if self._codex is None:
+            async with self._codex_lock:
+                if self._codex is None:
+                    try:
+                        from openai_codex import AsyncCodex, CodexConfig
+                    except ImportError as e:
+                        raise RuntimeError(
+                            "openai-codex not installed. Run: pip install openai-codex"
+                        ) from e
+
+                    env: dict[str, str] = {}
+                    proxy = getattr(self._config, "proxy", None)
+                    if proxy:
+                        env["HTTPS_PROXY"] = proxy
+                        env["HTTP_PROXY"] = proxy
+
+                    codex_bin = getattr(self._config, "codex_bin", None)
+                    self._codex = AsyncCodex(config=CodexConfig(
+                        env=env or None,
+                        codex_bin=codex_bin,
+                        cwd=os.getcwd(),
+                    ))
+                    await self._codex.__aenter__()
+                    logger.info("Codex SDK client initialized")
+        return self._codex
+
+    async def _run_turn(
+        self,
+        *,
+        session_key: str,
+        prompt: str,
+        model: str | None,
+        cwd: str,
+        on_delta: Callable[[str], Awaitable[None]],
+        on_tool_start: Callable[[str, dict[str, Any]], Awaitable[None]],
+        on_tool_end: Callable[[str, bool, str], Awaitable[None]],
+        on_reasoning: Callable[[str], Awaitable[None]],
+    ) -> _TurnResult:
+        codex = await self._ensure_codex()
+        from openai_codex import Sandbox, ApprovalMode
+
+        thread = self._threads.get(session_key)
+        if thread is None:
+            sandbox_name = getattr(self._config, "codex_sandbox", "workspace_write")
+            approval_name = getattr(self._config, "codex_approval_mode", "auto_review")
+            base_instructions = getattr(self._config, "codex_base_instructions", None)
+
+            thread_kwargs = dict(
+                sandbox=Sandbox[sandbox_name],
+                approval_mode=ApprovalMode[approval_name],
+                cwd=cwd,
+                base_instructions=base_instructions,
+            )
+            # Only pass model if explicitly configured — let the codex binary use its own default.
+            # Note: we ignore the `model` param from _run_turn because that comes from the native
+            # provider config (e.g. "minimax-m3") and is not a valid codex model.
+            config_model = getattr(self._config, "codex_model", None)
+            if config_model:
+                thread_kwargs["model"] = config_model
+
+            thread = await codex.thread_start(**thread_kwargs)
+            self._threads[session_key] = thread
+            logger.debug("Created new codex thread for session {}", session_key)
+
+        turn_kwargs = dict(cwd=cwd)
+        # Same reasoning: only pass model from SDK config, not from spec.model
+        config_model = getattr(self._config, "codex_model", None)
+        if config_model:
+            turn_kwargs["model"] = config_model
+        turn = await thread.turn(prompt, **turn_kwargs)
+        self._active_turns[session_key] = turn
+
+        tools_used: list[str] = []
+        usage: dict[str, int] = {}
+        all_deltas: list[str] = []
+        stop_reason = "completed"
+        error: str | None = None
+
+        try:
+            async for event in turn.stream():
+                method = getattr(event, "method", "")
+                payload = getattr(event, "payload", None)
+
+                if method == "item/agentMessage/delta" and payload:
+                    delta = getattr(payload, "delta", "")
+                    if delta:
+                        all_deltas.append(delta)
+                        await on_delta(delta)
+
+                elif method == "item/reasoning/text/delta" and payload:
+                    delta = getattr(payload, "delta", "")
+                    if delta:
+                        await on_reasoning(delta)
+
+                elif method == "item/started" and payload:
+                    item = self._root_item(payload)
+                    await self._handle_item_started(item, on_tool_start)
+
+                elif method == "item/completed" and payload:
+                    item = self._root_item(payload)
+                    name = await self._handle_item_completed(item, on_tool_end)
+                    if name:
+                        tools_used.append(name)
+
+                elif method == "thread/tokenUsage/updated" and payload:
+                    token_usage = getattr(payload, "token_usage", None)
+                    if token_usage is not None:
+                        last = getattr(token_usage, "last", None)
+                        if last is not None:
+                            usage = {
+                                "prompt_tokens": getattr(last, "input_tokens", 0),
+                                "completion_tokens": getattr(last, "output_tokens", 0),
+                                "cached_tokens": getattr(last, "cached_input_tokens", 0),
+                            }
+
+                elif method == "turn/completed" and payload:
+                    turn_info = getattr(payload, "turn", None)
+                    if turn_info is not None:
+                        status = getattr(turn_info, "status", None)
+                        status_str = str(status) if status else "completed"
+                        if "failed" in status_str:
+                            stop_reason = "error"
+                            err = getattr(turn_info, "error", None)
+                            error = getattr(err, "message", "Codex turn failed") if err else "Codex turn failed"
+                        elif "interrupted" in status_str:
+                            stop_reason = "error"
+                            error = "Turn interrupted"
+
+        finally:
+            self._active_turns.pop(session_key, None)
+
+        self._last_activity[session_key] = time.time()
+        final = "".join(all_deltas) if all_deltas else None
+        return _TurnResult(
+            final_content=final,
+            tools_used=tools_used,
+            tool_events=[],
+            usage=usage,
+            stop_reason=stop_reason,
+            error=error,
+            messages=[],
+        )
+
+    @staticmethod
+    def _root_item(payload: Any) -> Any:
+        """Extract the root item from a payload."""
+        item = getattr(payload, "item", None)
+        if item is None:
+            return None
+        return getattr(item, "root", item)
+
+    @staticmethod
+    async def _handle_item_started(item: Any, on_tool_start: Callable) -> None:
+        if item is None:
+            return
+        item_type = getattr(item, "type", "")
+        if item_type == "commandExecution":
+            cmd = getattr(item, "command", "")
+            await on_tool_start("Bash", {"command": cmd})
+        elif item_type == "fileChange":
+            changes = getattr(item, "changes", []) or []
+            paths = [getattr(c, "path", "") for c in changes if hasattr(c, "path")]
+            name = "Edit" if len(changes) == 1 else "MultiEdit"
+            await on_tool_start(name, {"files": paths})
+        elif item_type == "mcpToolCall":
+            server = getattr(item, "server", "")
+            tool = getattr(item, "tool", "")
+            args = getattr(item, "arguments", {}) or {}
+            await on_tool_start(f"mcp__{server}__{tool}", args)
+
+    @staticmethod
+    async def _handle_item_completed(item: Any, on_tool_end: Callable) -> str | None:
+        if item is None:
+            return None
+        item_type = getattr(item, "type", "")
+        if item_type == "commandExecution":
+            cmd = getattr(item, "command", "")
+            exit_code = getattr(item, "exit_code", 1)
+            output = getattr(item, "aggregated_output", "") or ""
+            await on_tool_end("Bash", exit_code == 0, output[:500])
+            return "Bash"
+        elif item_type == "fileChange":
+            changes = getattr(item, "changes", []) or []
+            name = "Edit" if len(changes) == 1 else "MultiEdit"
+            await on_tool_end(name, True, f"{len(changes)} file(s) changed")
+            return name
+        elif item_type == "mcpToolCall":
+            server = getattr(item, "server", "")
+            tool = getattr(item, "tool", "")
+            status = getattr(item, "status", "")
+            result = getattr(item, "result", "") or ""
+            name = f"mcp__{server}__{tool}"
+            await on_tool_end(name, status == "completed", str(result)[:500])
+            return name
+        return None
+
+    async def _interrupt_turn(self, session_key: str) -> None:
+        turn = self._active_turns.get(session_key)
+        if turn:
+            try:
+                await turn.interrupt()
+                logger.debug("Interrupted codex turn for session {}", session_key)
+            except Exception:
+                logger.debug("Error interrupting codex turn (may have already finished)")
+
+    async def evict_stale(self, idle_timeout_s: float) -> int:
+        now = time.time()
+        evicted = 0
+        for sk in list(self._threads.keys()):
+            last = self._last_activity.get(sk, 0)
+            if now - last > idle_timeout_s and sk not in self._active_turns:
+                self._threads.pop(sk, None)
+                self._last_activity.pop(sk, None)
+                evicted += 1
+        if evicted:
+            logger.debug("Evicted {} stale codex threads", evicted)
+        return evicted
+
+    async def shutdown(self) -> None:
+        if self._codex:
+            try:
+                await self._codex.__aexit__(None, None, None)
+                logger.info("Codex SDK client shut down")
+            except Exception:
+                logger.exception("Codex SDK shutdown error")
+            self._codex = None
+        self._threads.clear()
+        self._active_turns.clear()
+        self._last_activity.clear()

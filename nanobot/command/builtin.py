@@ -132,6 +132,13 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "shield",
         "[list|approve <code>|deny <code>|revoke <user_id>]",
     ),
+    BuiltinCommandSpec(
+        "/backend",
+        "Switch runner backend",
+        "Show or switch the runner backend (native / codex-sdk / claude-sdk).",
+        "cpu",
+        "[native|codex-sdk|claude-sdk|reset]",
+    ),
 )
 
 
@@ -771,6 +778,55 @@ async def cmd_pairing(ctx: CommandContext) -> OutboundMessage:
     )
 
 
+async def cmd_backend(ctx: CommandContext) -> OutboundMessage:
+    """Show or switch runner backend."""
+    loop = ctx.loop
+    msg = ctx.msg
+    key = ctx.key
+    arg = (ctx.args or "").strip().lower()
+
+    if not arg:
+        current = loop.get_session_runner_backend(key)
+        default = loop._runner_backend_default
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=(
+                f"**Current backend:** `{current}`\n"
+                f"**Default:** `{default}`\n\n"
+                f"Switch: `/backend codex-sdk` or `/backend native`\n"
+                f"Note: model names must match what the SDK accepts."
+            ),
+            metadata={**dict(msg.metadata or {}), "render_as": "text"},
+        )
+
+    if arg == "reset":
+        loop.set_session_runner_backend(key, loop._runner_backend_default)
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=f"Backend reset to default (`{loop._runner_backend_default}`).",
+            metadata={**dict(msg.metadata or {}), "render_as": "text"},
+        )
+
+    valid = {"native", "codex-sdk", "claude-sdk"}
+    if arg not in valid:
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=f"Unknown backend: `{arg}`. Valid: {', '.join(f'`{b}`' for b in sorted(valid))}",
+            metadata={**dict(msg.metadata or {}), "render_as": "text"},
+        )
+
+    loop.set_session_runner_backend(key, arg)
+    return OutboundMessage(
+        channel=msg.channel,
+        chat_id=msg.chat_id,
+        content=f"Backend switched to `{arg}` for this session. Next message will use the new backend.",
+        metadata={**dict(msg.metadata or {}), "render_as": "text"},
+    )
+
+
 async def cmd_skill(ctx: CommandContext) -> OutboundMessage:
     """List all enabled skills (name and description only)."""
     loop = ctx.loop
@@ -892,3 +948,5 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.exact("/help", cmd_help)
     router.exact("/pairing", cmd_pairing)
     router.prefix("/pairing ", cmd_pairing)
+    router.exact("/backend", cmd_backend)
+    router.prefix("/backend ", cmd_backend)
