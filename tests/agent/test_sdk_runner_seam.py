@@ -70,6 +70,9 @@ class FakeSDKRunner(SDKRunner):
     async def set_model(self, session_key: str, model: str) -> None:
         self.last_set_model = model
 
+    async def evict_session(self, session_key: str) -> None:
+        pass
+
     async def evict_stale(self, idle_timeout_s: float) -> int:
         self.evict_called = True
         return 0

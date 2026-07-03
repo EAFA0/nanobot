@@ -238,6 +238,9 @@ class _ErrorFakeSDKRunner(SDKRunner):
     async def set_model(self, session_key: str, model: str) -> None:
         pass
 
+    async def evict_session(self, session_key: str) -> None:
+        pass
+
     async def evict_stale(self, idle_timeout_s: float) -> int:
         return 0
 
@@ -297,6 +300,9 @@ class _CancelledFakeSDKRunner(SDKRunner):
     async def set_model(self, session_key: str, model: str) -> None:
         pass
 
+    async def evict_session(self, session_key: str) -> None:
+        pass
+
     async def evict_stale(self, idle_timeout_s: float) -> int:
         return 0
 
@@ -340,6 +346,9 @@ class _LifecycleFakeSDKRunner(SDKRunner):
         return []
 
     async def set_model(self, session_key: str, model: str) -> None:
+        pass
+
+    async def evict_session(self, session_key: str) -> None:
         pass
 
     async def evict_stale(self, idle_timeout_s: float) -> int:

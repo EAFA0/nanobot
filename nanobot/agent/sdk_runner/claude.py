@@ -240,6 +240,17 @@ class ClaudeSDKRunner(SDKRunner):
             except Exception:
                 logger.debug("Error interrupting claude turn (may have already finished)")
 
+    async def evict_session(self, session_key: str) -> None:
+        client = self._clients.pop(session_key, None)
+        if client:
+            try:
+                await client.__aexit__(None, None, None)
+            except Exception:
+                pass
+            self._client_locks.pop(session_key, None)
+            self._last_activity.pop(session_key, None)
+            logger.debug("Evicted claude session {}", session_key)
+
     async def evict_stale(self, idle_timeout_s: float) -> int:
         now = time.time()
         evicted = 0

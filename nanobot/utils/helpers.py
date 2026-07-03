@@ -682,6 +682,7 @@ def build_status_content(
     search_usage_text: str | None = None,
     active_task_count: int = 0,
     max_completion_tokens: int = 8192,
+    backend: str | None = None,
 ) -> str:
     """Build a human-readable runtime status snapshot.
 
@@ -689,6 +690,7 @@ def build_status_content(
         search_usage_text: Optional pre-formatted web search usage string
                            (produced by SearchUsageInfo.format()). When provided
                            it is appended as an extra section.
+        backend: Optional runner backend name (e.g. "codex-sdk"). Shows a Backend line.
     """
     uptime_s = int(time.time() - start_time)
     uptime = (
@@ -715,6 +717,10 @@ def build_status_content(
     lines = [
         f"\U0001f408 nanobot v{version}",
         f"\U0001f9e0 Model: {model}",
+    ]
+    if backend:
+        lines.append(f"\U0001f50c Backend: {backend}")
+    lines += [
         token_line,
         f"\U0001f4da Context: {ctx_used_str}/{ctx_total_str} ({ctx_pct}% of input budget)",
         f"\U0001f4ac Session: {session_msg_count} messages",

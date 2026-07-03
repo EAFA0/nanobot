@@ -204,11 +204,23 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
     """Build an outbound status message for a session."""
     loop = ctx.loop
     session = ctx.session or loop.sessions.get_or_create(ctx.key)
+    is_sdk = loop._is_sdk_backend(ctx.key)
+
     ctx_est = 0
-    with suppress(Exception):
-        ctx_est, _ = loop.consolidator.estimate_session_prompt_tokens(session)
+    if not is_sdk:
+        with suppress(Exception):
+            ctx_est, _ = loop.consolidator.estimate_session_prompt_tokens(session)
     if ctx_est <= 0:
         ctx_est = loop._last_usage.get("prompt_tokens", 0)
+
+    # Determine display model and backend
+    backend_name: str | None = None
+    display_model = loop.model
+    if is_sdk:
+        backend_name = loop._effective_runner_backend(ctx.key)
+        sdk_model = loop.get_session_sdk_model(ctx.key)
+        if sdk_model:
+            display_model = sdk_model
 
     # Fetch web search provider usage (best-effort, never blocks the response)
     search_usage_text: str | None = None
@@ -230,7 +242,7 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
         content=build_status_content(
-            version=__version__, model=loop.model,
+            version=__version__, model=display_model,
             start_time=loop._start_time, last_usage=loop._last_usage,
             context_window_tokens=loop.context_window_tokens,
             session_msg_count=len(session.get_history(max_messages=0)),
@@ -240,6 +252,7 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
             max_completion_tokens=getattr(
                 getattr(loop.provider, "generation", None), "max_tokens", 8192
             ),
+            backend=backend_name,
         ),
         metadata={**dict(ctx.msg.metadata or {}), "render_as": "text"},
     )
@@ -249,6 +262,15 @@ async def cmd_new(ctx: CommandContext) -> OutboundMessage:
     """Stop active task and start a fresh session."""
     loop = ctx.loop
     await loop._cancel_active_tasks(ctx.key)
+
+    # Evict SDK runner session resources (thread/client) so the next turn starts fresh
+    if loop._is_sdk_backend(ctx.key):
+        backend = loop._effective_runner_backend(ctx.key)
+        with suppress(Exception):
+            runner = loop._get_sdk_runner(backend)
+            await runner.evict_session(ctx.key)
+        loop._session_sdk_models.pop(ctx.key, None)
+
     session = ctx.session or loop.sessions.get_or_create(ctx.key)
     snapshot = session.messages[session.last_consolidated:]
     session.clear()

@@ -221,6 +221,11 @@ class SDKRunner(ABC):
         ...
 
     @abstractmethod
+    async def evict_session(self, session_key: str) -> None:
+        """Remove a specific session's SDK resources (thread/client)."""
+        ...
+
+    @abstractmethod
     async def evict_stale(self, idle_timeout_s: float) -> int:
         """Remove idle sessions. Return count evicted."""
         ...

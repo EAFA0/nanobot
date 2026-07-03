@@ -192,17 +192,26 @@ class CodexSDKRunner(SDKRunner):
         return getattr(item, "root", item)
 
     @staticmethod
+    def _command_execution_tool_name(item: Any) -> str:
+        """Determine tool name from a commandExecution item's action type."""
+        actions = getattr(item, "command_actions", None) or []
+        if actions:
+            action_type = getattr(actions[0], "type", "")
+            if action_type == "read":
+                return "Read"
+            if action_type == "search":
+                return "Grep"
+        return "Bash"
+
+    @staticmethod
     async def _handle_item_started(item: Any, on_tool_start: Callable) -> None:
-        # TODO: tool mapping is coarse — all commandExecution items show as "Bash"
-        # regardless of actual type (Read, Grep, shell command, etc.).
-        # Should inspect command_actions[0].type ('read'|'search'|'command')
-        # and map to correct tool names.
         if item is None:
             return
         item_type = getattr(item, "type", "")
         if item_type == "commandExecution":
             cmd = getattr(item, "command", "")
-            await on_tool_start("Bash", {"command": cmd})
+            name = CodexSDKRunner._command_execution_tool_name(item)
+            await on_tool_start(name, {"command": cmd})
         elif item_type == "fileChange":
             changes = getattr(item, "changes", []) or []
             paths = [getattr(c, "path", "") for c in changes if hasattr(c, "path")]
@@ -223,8 +232,9 @@ class CodexSDKRunner(SDKRunner):
             cmd = getattr(item, "command", "")
             exit_code = getattr(item, "exit_code", 1)
             output = getattr(item, "aggregated_output", "") or ""
-            await on_tool_end("Bash", exit_code == 0, output[:500])
-            return "Bash"
+            name = CodexSDKRunner._command_execution_tool_name(item)
+            await on_tool_end(name, exit_code == 0, output[:500])
+            return name
         elif item_type == "fileChange":
             changes = getattr(item, "changes", []) or []
             name = "Edit" if len(changes) == 1 else "MultiEdit"
@@ -275,6 +285,12 @@ class CodexSDKRunner(SDKRunner):
                 logger.debug("Interrupted codex turn for session {}", session_key)
             except Exception:
                 logger.debug("Error interrupting codex turn (may have already finished)")
+
+    async def evict_session(self, session_key: str) -> None:
+        self._threads.pop(session_key, None)
+        self._last_activity.pop(session_key, None)
+        self._session_models.pop(session_key, None)
+        logger.debug("Evicted codex session {}", session_key)
 
     async def evict_stale(self, idle_timeout_s: float) -> int:
         now = time.time()
