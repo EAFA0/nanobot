@@ -431,6 +431,49 @@ class TestCodexEventParsing:
         # The correct names are tested in test_agent_message_delta_triggers_on_delta above.
 
 
+class TestCodexReasoningEffortPatch:
+    """The codex binary returns reasoningEffort='max' but the SDK enum only
+    accepts none/minimal/low/medium/high/xhigh. Our patch adds 'max' → xhigh."""
+
+    def test_patch_adds_max_to_enum(self):
+        from openai_codex.generated.v2_all import ReasoningEffort
+
+        # Save original state
+        had_max = "max" in ReasoningEffort._value2member_map_
+        original_map = dict(ReasoningEffort._value2member_map_)
+
+        try:
+            if had_max:
+                del ReasoningEffort._value2member_map_["max"]
+
+            assert "max" not in ReasoningEffort._value2member_map_
+
+            CodexSDKRunner._patch_reasoning_effort_enum()
+
+            assert "max" in ReasoningEffort._value2member_map_
+            assert ReasoningEffort._value2member_map_["max"] == ReasoningEffort.xhigh
+        finally:
+            if not had_max and "max" in ReasoningEffort._value2member_map_:
+                del ReasoningEffort._value2member_map_["max"]
+            else:
+                ReasoningEffort._value2member_map_.clear()
+                ReasoningEffort._value2member_map_.update(original_map)
+
+    def test_patch_is_idempotent(self):
+        """Calling patch twice must not raise or duplicate."""
+        from openai_codex.generated.v2_all import ReasoningEffort
+
+        original_map = dict(ReasoningEffort._value2member_map_)
+        try:
+            CodexSDKRunner._patch_reasoning_effort_enum()
+            count_after_first = len(ReasoningEffort._value2member_map_)
+            CodexSDKRunner._patch_reasoning_effort_enum()
+            assert len(ReasoningEffort._value2member_map_) == count_after_first
+        finally:
+            ReasoningEffort._value2member_map_.clear()
+            ReasoningEffort._value2member_map_.update(original_map)
+
+
 # ── ClaudeSDKRunner event parsing ───────────────────────────────────
 
 
