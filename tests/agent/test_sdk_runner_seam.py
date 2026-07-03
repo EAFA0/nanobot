@@ -61,6 +61,15 @@ class FakeSDKRunner(SDKRunner):
     async def _interrupt_turn(self, session_key: str) -> None:
         self.interrupt_called = True
 
+    async def list_models(self) -> list[dict[str, Any]]:
+        return [
+            {"id": "fake-model-1", "name": "Fake Model 1", "description": "Test model", "is_default": True},
+            {"id": "fake-model-2", "name": "Fake Model 2", "description": "Another test model", "is_default": False},
+        ]
+
+    async def set_model(self, session_key: str, model: str) -> None:
+        self.last_set_model = model
+
     async def evict_stale(self, idle_timeout_s: float) -> int:
         self.evict_called = True
         return 0

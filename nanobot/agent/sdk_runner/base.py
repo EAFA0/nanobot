@@ -119,35 +119,15 @@ class SDKRunner(ABC):
                 await hook.emit_reasoning(text)
 
         try:
-            timeout_s = getattr(self, "_turn_timeout_s", 120)
-            turn_result = await asyncio.wait_for(
-                self._run_turn(
-                    session_key=session_key,
-                    prompt=prompt,
-                    model=spec.model,
-                    cwd=cwd,
-                    on_delta=on_delta,
-                    on_tool_start=on_tool_start,
-                    on_tool_end=on_tool_end,
-                    on_reasoning=on_reasoning,
-                ),
-                timeout=timeout_s,
-            )
-        except asyncio.TimeoutError:
-            logger.warning("SDK runner turn timed out after {}s for session {}", timeout_s, session_key)
-            await self._interrupt_turn(session_key)
-            if hook:
-                await hook.emit_reasoning_end()
-                await hook.on_stream_end(iter_ctx, resuming=False)
-            return AgentRunResult(
-                final_content=None,
-                messages=list(spec.initial_messages),
-                tools_used=tools_used,
-                usage={},
-                stop_reason="error",
-                error=f"SDK turn timed out after {timeout_s}s",
-                tool_events=tool_events,
-                had_injections=False,
+            turn_result = await self._run_turn(
+                session_key=session_key,
+                prompt=prompt,
+                model=spec.model,
+                cwd=cwd,
+                on_delta=on_delta,
+                on_tool_start=on_tool_start,
+                on_tool_end=on_tool_end,
+                on_reasoning=on_reasoning,
             )
         except asyncio.CancelledError:
             await self._interrupt_turn(session_key)
@@ -228,6 +208,19 @@ class SDKRunner(ABC):
         ...
 
     @abstractmethod
+    async def list_models(self) -> list[dict[str, Any]]:
+        """List models available from the underlying SDK binary.
+
+        Returns list of dicts with at least: id, name, description, is_default.
+        """
+        ...
+
+    @abstractmethod
+    async def set_model(self, session_key: str, model: str) -> None:
+        """Switch model for a session. No-op if not supported."""
+        ...
+
+    @abstractmethod
     async def evict_stale(self, idle_timeout_s: float) -> int:
         """Remove idle sessions. Return count evicted."""
         ...
@@ -236,6 +229,41 @@ class SDKRunner(ABC):
     async def shutdown(self) -> None:
         """Clean up all SDK subprocesses."""
         ...
+
+    @staticmethod
+    def _load_agents_md(cwd: str) -> str | None:
+        """Read AGENTS.md for SDK system context injection.
+
+        Priority:
+        1. ~/.nanobot/workspace/AGENTS.md (user's workspace instructions)
+        2. {cwd}/AGENTS.md (project-level instructions)
+
+        Content is passed through directly — no prefix or disclaimer added.
+        """
+        from pathlib import Path
+
+        parts: list[str] = []
+
+        workspace_agents = Path.home() / ".nanobot" / "workspace" / "AGENTS.md"
+        if workspace_agents.is_file():
+            try:
+                content = workspace_agents.read_text(encoding="utf-8").strip()
+                if content:
+                    parts.append(content)
+            except OSError:
+                pass
+
+        for candidate in (Path(cwd) / "AGENTS.md", Path(cwd) / "agents.md"):
+            if candidate.is_file():
+                try:
+                    content = candidate.read_text(encoding="utf-8").strip()
+                    if content:
+                        parts.append(content)
+                except OSError:
+                    pass
+                break
+
+        return "\n\n---\n\n".join(parts) if parts else None
 
     @staticmethod
     def _extract_user_prompt(messages: list[dict[str, Any]]) -> str | None:

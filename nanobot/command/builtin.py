@@ -293,11 +293,43 @@ def _model_command_status(loop) -> str:
 
 
 async def cmd_model(ctx: CommandContext) -> OutboundMessage:
-    """Show or switch model presets."""
+    """Show or switch model (native presets or SDK binary models)."""
     loop = ctx.loop
     args = ctx.args.strip()
+    key = ctx.key
     metadata = {**dict(ctx.msg.metadata or {}), "render_as": "text"}
+    backend = loop._effective_runner_backend(key)
 
+    # ── SDK backend: list/switch models from the binary ──────────────
+    if backend != "native":
+        if not args:
+            models = await loop.list_sdk_models(key)
+            current = loop.get_session_sdk_model(key)
+            lines = [f"**Models available from `{backend}`:**", ""]
+            if not models:
+                lines.append("_(model list not available)_")
+            for m in models:
+                marker = " ◀" if current and m["id"] == current else (" (default)" if m.get("is_default") else "")
+                desc = m.get("description", "")
+                lines.append(f"- `{m['id']}`{marker} — {desc}")
+            if current:
+                lines.append(f"\n**Current:** `{current}`")
+            lines.append(f"\nSwitch: `/model <name>`")
+            return OutboundMessage(
+                channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+                content="\n".join(lines), metadata=metadata,
+            )
+
+        # Switch model
+        model_name = args.split()[0]
+        await loop.set_sdk_model(key, model_name)
+        return OutboundMessage(
+            channel=ctx.msg.channel, chat_id=ctx.msg.chat_id,
+            content=f"Model switched to `{model_name}` on `{backend}`. Next message uses the new model.",
+            metadata=metadata,
+        )
+
+    # ── Native backend: model presets (existing behavior) ────────────
     if not args:
         return OutboundMessage(
             channel=ctx.msg.channel,

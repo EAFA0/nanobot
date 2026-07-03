@@ -125,15 +125,15 @@ class TestGetSDKRunner:
             loop._get_sdk_runner("unknown-sdk")
 
     def test_passes_config(self, tmp_path):
-        cfg = SDKRunnerConfig(turn_timeout_s=42, proxy="http://proxy:8080")
+        cfg = SDKRunnerConfig(proxy="http://proxy:8080")
         loop = _make_loop(tmp_path, sdk_runner_config=cfg)
         runner = loop._get_sdk_runner("codex-sdk")
-        assert runner._turn_timeout_s == 42
+        assert runner._config.proxy == "http://proxy:8080"
 
     def test_default_config_when_none(self, tmp_path):
         loop = _make_loop(tmp_path, sdk_runner_config=None)
         runner = loop._get_sdk_runner("codex-sdk")
-        assert runner._turn_timeout_s == 120  # SDKRunnerConfig default
+        assert runner._config is not None
 
 
 # ── /backend command ────────────────────────────────────────────────
@@ -217,86 +217,6 @@ class TestBackendCommand:
 # ── SDKRunner timeout ───────────────────────────────────────────────
 
 
-class _SlowFakeSDKRunner(SDKRunner):
-    """Fake SDK runner that hangs forever — tests timeout kick-in."""
-
-    backend_name = "slow-fake"
-
-    def __init__(self, hang_time_s: float = 10.0):
-        self._hang_time_s = hang_time_s
-        self._turn_timeout_s = 0.1  # very short for testing
-        self.interrupt_called = False
-
-    async def _run_turn(self, **kwargs):
-        await asyncio.sleep(self._hang_time_s)
-        return _TurnResult(final_content="too late")
-
-    async def _interrupt_turn(self, session_key: str) -> None:
-        self.interrupt_called = True
-
-    async def evict_stale(self, idle_timeout_s: float) -> int:
-        return 0
-
-    async def shutdown(self) -> None:
-        pass
-
-
-class TestSDKRunnerTimeout:
-    @pytest.mark.asyncio
-    async def test_timeout_returns_error(self):
-        runner = _SlowFakeSDKRunner(hang_time_s=10.0)
-        spec = AgentRunSpec(
-            initial_messages=[{"role": "user", "content": "Hi"}],
-            tools=None,  # type: ignore[arg-type]
-            model="test",
-            max_iterations=10,
-            max_tool_result_chars=1000,
-        )
-        result = await runner.run(spec)
-        assert result.stop_reason == "error"
-        assert "timed out" in (result.error or "").lower()
-        assert runner.interrupt_called
-
-    @pytest.mark.asyncio
-    async def test_timeout_preserves_initial_messages(self):
-        runner = _SlowFakeSDKRunner(hang_time_s=10.0)
-        initial = [
-            {"role": "system", "content": "sys"},
-            {"role": "user", "content": "Hi"},
-        ]
-        spec = AgentRunSpec(
-            initial_messages=initial,
-            tools=None,  # type: ignore[arg-type]
-            model="test",
-            max_iterations=10,
-            max_tool_result_chars=1000,
-        )
-        result = await runner.run(spec)
-        assert result.messages == initial
-
-    @pytest.mark.asyncio
-    async def test_fast_response_no_timeout(self):
-        """If _run_turn finishes before timeout, normal result is returned."""
-
-        class FastRunner(_SlowFakeSDKRunner):
-            async def _run_turn(self, **kwargs):
-                await kwargs["on_delta"]("quick reply")
-                return _TurnResult(final_content="quick reply", stop_reason="completed")
-
-        runner = FastRunner(hang_time_s=0.0)
-        runner._turn_timeout_s = 5.0  # generous timeout
-        spec = AgentRunSpec(
-            initial_messages=[{"role": "user", "content": "Hi"}],
-            tools=None,  # type: ignore[arg-type]
-            model="test",
-            max_iterations=10,
-            max_tool_result_chars=1000,
-        )
-        result = await runner.run(spec)
-        assert result.stop_reason == "completed"
-        assert result.final_content == "quick reply"
-
-
 # ── SDKRunner error handling ────────────────────────────────────────
 
 
@@ -304,12 +224,18 @@ class _ErrorFakeSDKRunner(SDKRunner):
     backend_name = "error-fake"
 
     def __init__(self):
-        self._turn_timeout_s = 120
+        pass
 
     async def _run_turn(self, **kwargs):
         raise RuntimeError("SDK exploded")
 
     async def _interrupt_turn(self, session_key: str) -> None:
+        pass
+
+    async def list_models(self) -> list[dict[str, Any]]:
+        return []
+
+    async def set_model(self, session_key: str, model: str) -> None:
         pass
 
     async def evict_stale(self, idle_timeout_s: float) -> int:
@@ -357,7 +283,6 @@ class _CancelledFakeSDKRunner(SDKRunner):
     backend_name = "cancel-fake"
 
     def __init__(self):
-        self._turn_timeout_s = 120
         self.interrupt_called = False
 
     async def _run_turn(self, **kwargs):
@@ -365,6 +290,12 @@ class _CancelledFakeSDKRunner(SDKRunner):
 
     async def _interrupt_turn(self, session_key: str) -> None:
         self.interrupt_called = True
+
+    async def list_models(self) -> list[dict[str, Any]]:
+        return []
+
+    async def set_model(self, session_key: str, model: str) -> None:
+        pass
 
     async def evict_stale(self, idle_timeout_s: float) -> int:
         return 0
@@ -396,7 +327,6 @@ class _LifecycleFakeSDKRunner(SDKRunner):
     backend_name = "lifecycle-fake"
 
     def __init__(self):
-        self._turn_timeout_s = 120
         self.evict_count = 0
         self.shutdown_called = False
 
@@ -404,6 +334,12 @@ class _LifecycleFakeSDKRunner(SDKRunner):
         return _TurnResult(final_content="ok")
 
     async def _interrupt_turn(self, session_key: str) -> None:
+        pass
+
+    async def list_models(self) -> list[dict[str, Any]]:
+        return []
+
+    async def set_model(self, session_key: str, model: str) -> None:
         pass
 
     async def evict_stale(self, idle_timeout_s: float) -> int:
@@ -448,8 +384,3 @@ class TestSDKRunnerConfig:
         assert cfg.claude_max_turns == 200
         assert cfg.claude_system_prompt is None
         assert cfg.session_idle_timeout_minutes == 60
-        assert cfg.turn_timeout_s == 120
-
-    def test_turn_timeout_bounded(self):
-        with pytest.raises(Exception):
-            SDKRunnerConfig(turn_timeout_s=1)  # ge=10

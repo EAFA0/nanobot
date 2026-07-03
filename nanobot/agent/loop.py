@@ -297,6 +297,7 @@ class AgentLoop:
         self._runner_backend_default = runner_backend
         self._sdk_runner_config = sdk_runner_config
         self._session_runner_backends: dict[str, str] = {}
+        self._session_sdk_models: dict[str, str] = {}
         self._sdk_runners: dict[str, Any] = {}  # backend_name → SDKRunner (lazy)
         self.subagents = SubagentManager(
             provider=provider,
@@ -467,6 +468,29 @@ class AgentLoop:
 
     def get_session_runner_backend(self, session_key: str) -> str:
         return self._effective_runner_backend(session_key)
+
+    def _is_sdk_backend(self, session_key: str) -> bool:
+        return self._effective_runner_backend(session_key) != "native"
+
+    async def list_sdk_models(self, session_key: str) -> list[dict[str, Any]]:
+        """List models available from the current SDK runner for this session."""
+        backend = self._effective_runner_backend(session_key)
+        if backend == "native":
+            return []
+        runner = self._get_sdk_runner(backend)
+        return await runner.list_models()
+
+    async def set_sdk_model(self, session_key: str, model: str) -> None:
+        """Switch model on the current SDK runner for this session."""
+        backend = self._effective_runner_backend(session_key)
+        if backend == "native":
+            return
+        runner = self._get_sdk_runner(backend)
+        await runner.set_model(session_key, model)
+        self._session_sdk_models[session_key] = model
+
+    def get_session_sdk_model(self, session_key: str) -> str | None:
+        return self._session_sdk_models.get(session_key)
 
     def _apply_provider_snapshot(
         self,
@@ -1282,14 +1306,15 @@ class AgentLoop:
         if self._restore_pending_user_turn(session):
             self.sessions.save(session)
 
-        session, pending = self.auto_compact.prepare_session(session, key)
-        if pending:
-            logger.info("Memory compact triggered for session {}", key)
+        if not self._is_sdk_backend(key):
+            session, pending = self.auto_compact.prepare_session(session, key)
+            if pending:
+                logger.info("Memory compact triggered for session {}", key)
 
-        await self.consolidator.maybe_consolidate_by_tokens(
-            session,
-            replay_max_messages=self._max_messages,
-        )
+            await self.consolidator.maybe_consolidate_by_tokens(
+                session,
+                replay_max_messages=self._max_messages,
+            )
         is_subagent = msg.sender_id == "subagent"
         if is_subagent and self._persist_subagent_followup(session, msg):
             logger.debug("Subagent result persisted for session {}", key)
@@ -1340,12 +1365,13 @@ class AgentLoop:
         )
         self._clear_runtime_checkpoint(session)
         self.sessions.save(session)
-        self._schedule_background(
-            self.consolidator.maybe_consolidate_by_tokens(
-                session,
-                replay_max_messages=self._max_messages,
+        if not self._is_sdk_backend(key):
+            self._schedule_background(
+                self.consolidator.maybe_consolidate_by_tokens(
+                    session,
+                    replay_max_messages=self._max_messages,
+                )
             )
-        )
         content = final_content or "Background task completed."
         outbound_metadata: dict[str, Any] = {}
         if channel == "slack" and key.startswith("slack:") and key.count(":") >= 2:
@@ -1533,6 +1559,8 @@ class AgentLoop:
         return self.channels_config.extract_document_text
 
     async def _state_compact(self, ctx: TurnContext) -> str:
+        if self._is_sdk_backend(ctx.session_key):
+            return "ok"
         ctx.session, pending = self.auto_compact.prepare_session(ctx.session, ctx.session_key)
         ctx.pending_summary = pending
         return "ok"
@@ -1563,7 +1591,7 @@ class AgentLoop:
         return "dispatch"
 
     async def _state_build(self, ctx: TurnContext) -> str:
-        if not ctx.ephemeral:
+        if not ctx.ephemeral and not self._is_sdk_backend(ctx.session_key):
             await self.consolidator.maybe_consolidate_by_tokens(
                 ctx.session,
                 replay_max_messages=self._max_messages,
@@ -1595,7 +1623,7 @@ class AgentLoop:
             ctx.session,
             ctx.history,
             ctx.pending_summary,
-            include_memory_recent_history=not ctx.ephemeral,
+            include_memory_recent_history=not ctx.ephemeral and not self._is_sdk_backend(ctx.session_key),
         )
         ctx.user_persisted_early = self._persist_user_message_early(
             ctx.msg, ctx.session
@@ -1668,7 +1696,7 @@ class AgentLoop:
             ctx.session_key,
             ctx.turn_latency_ms,
         )
-        if not ctx.ephemeral:
+        if not ctx.ephemeral and not self._is_sdk_backend(ctx.session_key):
             ctx.session.enforce_file_cap(
                 on_archive=partial(self.context.memory.raw_archive, session_key=ctx.session_key)
             )

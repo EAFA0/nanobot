@@ -193,7 +193,6 @@ class SDKRunnerConfig(Base):
 
     # --- Session management ---
     session_idle_timeout_minutes: int = Field(default=60, ge=1)
-    turn_timeout_s: int = Field(default=120, ge=10)  # Max seconds per SDK turn before timeout error
 
 
 class AgentsConfig(Base):

@@ -6,6 +6,7 @@ One ClaudeSDKClient per session (stateful — holds conversation context).
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any, Awaitable, Callable
 
@@ -21,7 +22,6 @@ class ClaudeSDKRunner(SDKRunner):
 
     def __init__(self, config: Any):
         self._config = config
-        self._turn_timeout_s = getattr(config, "turn_timeout_s", 120)
         self._clients: dict[str, Any] = {}  # session_key → ClaudeSDKClient
         self._client_locks: dict[str, asyncio.Lock] = {}  # per-session init lock
         self._last_activity: dict[str, float] = {}
@@ -65,7 +65,13 @@ class ClaudeSDKRunner(SDKRunner):
                 if config_model:
                     options_kwargs["model"] = config_model
                 system_prompt = getattr(self._config, "claude_system_prompt", None)
-                if system_prompt:
+                agents_md = self._load_agents_md(cwd)
+                if agents_md:
+                    merged = f"# AGENTS.md\n\n{agents_md}"
+                    if system_prompt:
+                        merged = f"{system_prompt}\n\n---\n\n{merged}"
+                    options_kwargs["system_prompt"] = merged
+                elif system_prompt:
                     options_kwargs["system_prompt"] = system_prompt
                 cli_path = getattr(self._config, "claude_cli_path", None)
                 if cli_path:
@@ -193,6 +199,37 @@ class ClaudeSDKRunner(SDKRunner):
             error=error,
             messages=[],
         )
+
+    async def list_models(self) -> list[dict[str, Any]]:
+        client = await self._ensure_client("__model_query__", os.getcwd())
+        try:
+            info = await client.get_server_info()
+        except Exception:
+            logger.exception("Failed to query claude/relay server info for models")
+            return []
+        models = info.get("models", []) if isinstance(info, dict) else []
+        result: list[dict[str, Any]] = []
+        for m in models:
+            result.append({
+                "id": m.get("value", ""),
+                "name": m.get("displayName", m.get("value", "")),
+                "description": m.get("description", ""),
+                "is_default": False,
+                "supports_effort": m.get("supportsEffort", False),
+                "effort_levels": m.get("supportedEffortLevels", []),
+            })
+        return result
+
+    async def set_model(self, session_key: str, model: str) -> None:
+        client = self._clients.get(session_key)
+        if client is None:
+            logger.debug("Cannot set_model: no client for session {}", session_key)
+            return
+        try:
+            await client.set_model(model)
+            logger.debug("Set model to {} for session {}", model, session_key)
+        except Exception:
+            logger.exception("Failed to set model {} for session {}", model, session_key)
 
     async def _interrupt_turn(self, session_key: str) -> None:
         client = self._clients.get(session_key)

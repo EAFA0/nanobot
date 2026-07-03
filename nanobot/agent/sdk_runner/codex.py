@@ -22,12 +22,12 @@ class CodexSDKRunner(SDKRunner):
 
     def __init__(self, config: Any):
         self._config = config
-        self._turn_timeout_s = getattr(config, "turn_timeout_s", 120)
         self._codex: Any = None  # AsyncCodex
         self._codex_lock = asyncio.Lock()
         self._threads: dict[str, Any] = {}  # session_key → Thread
         self._active_turns: dict[str, Any] = {}  # session_key → TurnHandle
         self._last_activity: dict[str, float] = {}
+        self._session_models: dict[str, str] = {}  # session_key → model override
 
     async def _ensure_codex(self) -> Any:
         if self._codex is None:
@@ -78,6 +78,12 @@ class CodexSDKRunner(SDKRunner):
             sandbox_name = getattr(self._config, "codex_sandbox", "workspace_write")
             approval_name = getattr(self._config, "codex_approval_mode", "auto_review")
             base_instructions = getattr(self._config, "codex_base_instructions", None)
+            agents_md = self._load_agents_md(cwd)
+            if agents_md:
+                merged = f"# AGENTS.md\n\n{agents_md}"
+                if base_instructions:
+                    merged = f"{base_instructions}\n\n---\n\n{merged}"
+                base_instructions = merged
 
             thread_kwargs = dict(
                 sandbox=Sandbox[sandbox_name],
@@ -97,10 +103,12 @@ class CodexSDKRunner(SDKRunner):
             logger.debug("Created new codex thread for session {}", session_key)
 
         turn_kwargs = dict(cwd=cwd)
-        # Same reasoning: only pass model from SDK config, not from spec.model
+        # Per-session model override takes precedence over global config
+        session_model = self._session_models.get(session_key)
         config_model = getattr(self._config, "codex_model", None)
-        if config_model:
-            turn_kwargs["model"] = config_model
+        model = session_model or config_model
+        if model:
+            turn_kwargs["model"] = model
         turn = await thread.turn(prompt, **turn_kwargs)
         self._active_turns[session_key] = turn
 
@@ -185,6 +193,10 @@ class CodexSDKRunner(SDKRunner):
 
     @staticmethod
     async def _handle_item_started(item: Any, on_tool_start: Callable) -> None:
+        # TODO: tool mapping is coarse — all commandExecution items show as "Bash"
+        # regardless of actual type (Read, Grep, shell command, etc.).
+        # Should inspect command_actions[0].type ('read'|'search'|'command')
+        # and map to correct tool names.
         if item is None:
             return
         item_type = getattr(item, "type", "")
@@ -228,6 +240,33 @@ class CodexSDKRunner(SDKRunner):
             return name
         return None
 
+    async def list_models(self) -> list[dict[str, Any]]:
+        codex = await self._ensure_codex()
+        try:
+            sync_client = codex._client._sync
+            raw = sync_client._request_raw("model/list", {})
+        except Exception:
+            logger.exception("Failed to query codex/traex model list")
+            return []
+        data = raw.get("data", []) if isinstance(raw, dict) else []
+        result: list[dict[str, Any]] = []
+        for m in data:
+            if m.get("hidden"):
+                continue
+            result.append({
+                "id": m.get("id", ""),
+                "name": m.get("displayName", m.get("id", "")),
+                "description": m.get("description", ""),
+                "is_default": m.get("isDefault", False),
+                "context_window": m.get("contextWindow"),
+                "family": m.get("modelFamily", ""),
+            })
+        return result
+
+    async def set_model(self, session_key: str, model: str) -> None:
+        self._session_models[session_key] = model
+        logger.debug("Set per-session model override to {} for session {}", model, session_key)
+
     async def _interrupt_turn(self, session_key: str) -> None:
         turn = self._active_turns.get(session_key)
         if turn:
@@ -245,6 +284,7 @@ class CodexSDKRunner(SDKRunner):
             if now - last > idle_timeout_s and sk not in self._active_turns:
                 self._threads.pop(sk, None)
                 self._last_activity.pop(sk, None)
+                self._session_models.pop(sk, None)
                 evicted += 1
         if evicted:
             logger.debug("Evicted {} stale codex threads", evicted)
@@ -261,3 +301,4 @@ class CodexSDKRunner(SDKRunner):
         self._threads.clear()
         self._active_turns.clear()
         self._last_activity.clear()
+        self._session_models.clear()
