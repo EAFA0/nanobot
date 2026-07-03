@@ -79,10 +79,18 @@ class CodexSDKRunner(SDKRunner):
             saved_thread_id = self._thread_ids.get(session_key)
             if saved_thread_id:
                 # Resume a previously-known thread (e.g. after process restart)
-                thread = await codex.thread_resume(saved_thread_id, cwd=cwd)
-                self._threads[session_key] = thread
-                logger.debug("Resumed codex thread {} for session {}", saved_thread_id, session_key)
-            else:
+                try:
+                    thread = await codex.thread_resume(saved_thread_id, cwd=cwd)
+                    self._threads[session_key] = thread
+                    logger.debug("Resumed codex thread {} for session {}", saved_thread_id, session_key)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to resume codex thread {} for session {}: {} — creating new thread",
+                        saved_thread_id, session_key, exc,
+                    )
+                    self._thread_ids.pop(session_key, None)
+                    thread = None
+            if thread is None:
                 sandbox_name = getattr(self._config, "codex_sandbox", "workspace_write")
                 approval_name = getattr(self._config, "codex_approval_mode", "auto_review")
                 base_instructions = getattr(self._config, "codex_base_instructions", None)
