@@ -41,6 +41,10 @@ class CodexSDKRunner(SDKRunner):
                             "openai-codex not installed. Run: pip install openai-codex"
                         ) from e
 
+                    # The codex binary may return reasoningEffort='max' which the SDK's
+                    # Pydantic ReasoningEffort enum doesn't accept. Patch it to be lenient.
+                    self._patch_reasoning_effort_enum()
+
                     env: dict[str, str] = {}
                     proxy = getattr(self._config, "proxy", None)
                     if proxy:
@@ -58,6 +62,17 @@ class CodexSDKRunner(SDKRunner):
                     await self._codex.__aenter__()
                     logger.info("Codex SDK client initialized")
         return self._codex
+
+    @staticmethod
+    def _patch_reasoning_effort_enum() -> None:
+        """The codex binary may return reasoningEffort='max' which the SDK enum
+        doesn't accept (only none/minimal/low/medium/high/xhigh). Map it to xhigh."""
+        try:
+            from openai_codex.generated.v2_all import ReasoningEffort
+            if "max" not in ReasoningEffort._value2member_map_:
+                ReasoningEffort._value2member_map_["max"] = ReasoningEffort.xhigh
+        except Exception:
+            pass
 
     async def _run_turn(
         self,
