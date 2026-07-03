@@ -297,7 +297,6 @@ class AgentLoop:
         self._runner_backend_default = runner_backend
         self._sdk_runner_config = sdk_runner_config
         self._session_runner_backends: dict[str, str] = {}
-        self._session_sdk_models: dict[str, str] = {}
         self._sdk_runners: dict[str, Any] = {}  # backend_name → SDKRunner (lazy)
         self.subagents = SubagentManager(
             provider=provider,
@@ -487,10 +486,13 @@ class AgentLoop:
             return
         runner = self._get_sdk_runner(backend)
         await runner.set_model(session_key, model)
-        self._session_sdk_models[session_key] = model
 
     def get_session_sdk_model(self, session_key: str) -> str | None:
-        return self._session_sdk_models.get(session_key)
+        backend = self._effective_runner_backend(session_key)
+        if backend == "native":
+            return None
+        runner = self._get_sdk_runner(backend)
+        return runner.get_model(session_key)
 
     def _apply_provider_snapshot(
         self,

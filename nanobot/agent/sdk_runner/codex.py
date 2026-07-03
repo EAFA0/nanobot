@@ -12,7 +12,7 @@ from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
-from nanobot.agent.sdk_runner.base import SDKRunner, _TurnResult
+from nanobot.agent.sdk_runner.base import SDKRunner, TurnResult
 
 
 class CodexSDKRunner(SDKRunner):
@@ -69,7 +69,7 @@ class CodexSDKRunner(SDKRunner):
         on_tool_start: Callable[[str, dict[str, Any]], Awaitable[None]],
         on_tool_end: Callable[[str, bool, str], Awaitable[None]],
         on_reasoning: Callable[[str], Awaitable[None]],
-    ) -> _TurnResult:
+    ) -> TurnResult:
         codex = await self._ensure_codex()
         from openai_codex import Sandbox, ApprovalMode
 
@@ -173,7 +173,7 @@ class CodexSDKRunner(SDKRunner):
 
         self._last_activity[session_key] = time.time()
         final = "".join(all_deltas) if all_deltas else None
-        return _TurnResult(
+        return TurnResult(
             final_content=final,
             tools_used=tools_used,
             tool_events=[],
@@ -276,6 +276,9 @@ class CodexSDKRunner(SDKRunner):
     async def set_model(self, session_key: str, model: str) -> None:
         self._session_models[session_key] = model
         logger.debug("Set per-session model override to {} for session {}", model, session_key)
+
+    def get_model(self, session_key: str) -> str | None:
+        return self._session_models.get(session_key)
 
     async def _interrupt_turn(self, session_key: str) -> None:
         turn = self._active_turns.get(session_key)

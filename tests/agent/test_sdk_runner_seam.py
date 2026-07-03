@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable
 import pytest
 
 from nanobot.agent.runner import AgentRunResult, AgentRunSpec
-from nanobot.agent.sdk_runner import SDKRunner, _TurnResult
+from nanobot.agent.sdk_runner import SDKRunner, TurnResult
 
 
 class FakeSDKRunner(SDKRunner):
@@ -44,14 +44,14 @@ class FakeSDKRunner(SDKRunner):
         on_tool_start: Callable[[str, dict[str, Any]], Awaitable[None]],
         on_tool_end: Callable[[str, bool, str], Awaitable[None]],
         on_reasoning: Callable[[str], Awaitable[None]],
-    ) -> _TurnResult:
+    ) -> TurnResult:
         self.turn_count += 1
         self.last_prompt = prompt
         self.last_session_key = session_key
         self.last_cwd = cwd
         self.last_model = model
         await on_delta(self._response)
-        return _TurnResult(
+        return TurnResult(
             final_content=self._response,
             tools_used=[],
             usage={"prompt_tokens": 10, "completion_tokens": 20},
@@ -342,7 +342,7 @@ class TestSDKRunnerSeamIntegration:
                 await kwargs["on_tool_start"]("Bash", {"command": "ls"})
                 await kwargs["on_tool_end"]("Bash", True, "file1.txt\nfile2.txt")
                 await kwargs["on_delta"]("Done.")
-                return _TurnResult(
+                return TurnResult(
                     final_content="Done.",
                     tools_used=["Bash"],
                     stop_reason="completed",

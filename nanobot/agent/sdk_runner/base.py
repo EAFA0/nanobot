@@ -27,7 +27,7 @@ from nanobot.providers.base import ToolCallRequest
 
 
 @dataclass
-class _TurnResult:
+class TurnResult:
     """Internal turn result returned by subclass _run_turn()."""
 
     final_content: str | None
@@ -198,7 +198,7 @@ class SDKRunner(ABC):
         on_tool_start: Callable[[str, dict[str, Any]], Awaitable[None]],
         on_tool_end: Callable[[str, bool, str], Awaitable[None]],
         on_reasoning: Callable[[str], Awaitable[None]],
-    ) -> _TurnResult:
+    ) -> TurnResult:
         """Execute one turn. Subclass implements."""
         ...
 
@@ -219,6 +219,10 @@ class SDKRunner(ABC):
     async def set_model(self, session_key: str, model: str) -> None:
         """Switch model for a session. No-op if not supported."""
         ...
+
+    def get_model(self, session_key: str) -> str | None:
+        """Return per-session model override, or None if not set."""
+        return None
 
     @abstractmethod
     async def evict_session(self, session_key: str) -> None:

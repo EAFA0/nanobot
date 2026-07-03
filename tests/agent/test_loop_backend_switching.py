@@ -20,7 +20,7 @@ import pytest
 
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.runner import AgentRunResult, AgentRunSpec
-from nanobot.agent.sdk_runner import SDKRunner, _TurnResult
+from nanobot.agent.sdk_runner import SDKRunner, TurnResult
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.command.builtin import cmd_backend
@@ -337,7 +337,7 @@ class _LifecycleFakeSDKRunner(SDKRunner):
         self.shutdown_called = False
 
     async def _run_turn(self, **kwargs):
-        return _TurnResult(final_content="ok")
+        return TurnResult(final_content="ok")
 
     async def _interrupt_turn(self, session_key: str) -> None:
         pass

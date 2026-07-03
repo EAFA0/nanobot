@@ -12,7 +12,7 @@ from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
-from nanobot.agent.sdk_runner.base import SDKRunner, _TurnResult
+from nanobot.agent.sdk_runner.base import SDKRunner, TurnResult
 
 
 class ClaudeSDKRunner(SDKRunner):
@@ -26,6 +26,7 @@ class ClaudeSDKRunner(SDKRunner):
         self._client_locks: dict[str, asyncio.Lock] = {}  # per-session init lock
         self._last_activity: dict[str, float] = {}
         self._active_turns: set[str] = set()
+        self._session_models: dict[str, str] = {}  # session_key → model override
 
     async def _ensure_client(self, session_key: str, cwd: str) -> Any:
         if session_key in self._clients:
@@ -98,7 +99,7 @@ class ClaudeSDKRunner(SDKRunner):
         on_tool_start: Callable[[str, dict[str, Any]], Awaitable[None]],
         on_tool_end: Callable[[str, bool, str], Awaitable[None]],
         on_reasoning: Callable[[str], Awaitable[None]],
-    ) -> _TurnResult:
+    ) -> TurnResult:
         client = await self._ensure_client(session_key, cwd)
         self._active_turns.add(session_key)
 
@@ -190,7 +191,7 @@ class ClaudeSDKRunner(SDKRunner):
 
         self._last_activity[session_key] = time.time()
         final = "".join(final_content_parts) if final_content_parts else None
-        return _TurnResult(
+        return TurnResult(
             final_content=final,
             tools_used=tools_used,
             tool_events=[],
@@ -201,11 +202,13 @@ class ClaudeSDKRunner(SDKRunner):
         )
 
     async def list_models(self) -> list[dict[str, Any]]:
-        client = await self._ensure_client("__model_query__", os.getcwd())
+        query_key = "__model_query__"
+        client = await self._ensure_client(query_key, os.getcwd())
         try:
             info = await client.get_server_info()
         except Exception:
             logger.exception("Failed to query claude/relay server info for models")
+            await self.evict_session(query_key)
             return []
         models = info.get("models", []) if isinstance(info, dict) else []
         result: list[dict[str, Any]] = []
@@ -218,9 +221,11 @@ class ClaudeSDKRunner(SDKRunner):
                 "supports_effort": m.get("supportsEffort", False),
                 "effort_levels": m.get("supportedEffortLevels", []),
             })
+        await self.evict_session(query_key)
         return result
 
     async def set_model(self, session_key: str, model: str) -> None:
+        self._session_models[session_key] = model
         client = self._clients.get(session_key)
         if client is None:
             logger.debug("Cannot set_model: no client for session {}", session_key)
@@ -230,6 +235,9 @@ class ClaudeSDKRunner(SDKRunner):
             logger.debug("Set model to {} for session {}", model, session_key)
         except Exception:
             logger.exception("Failed to set model {} for session {}", model, session_key)
+
+    def get_model(self, session_key: str) -> str | None:
+        return self._session_models.get(session_key)
 
     async def _interrupt_turn(self, session_key: str) -> None:
         client = self._clients.get(session_key)
@@ -249,6 +257,7 @@ class ClaudeSDKRunner(SDKRunner):
                 pass
             self._client_locks.pop(session_key, None)
             self._last_activity.pop(session_key, None)
+            self._session_models.pop(session_key, None)
             logger.debug("Evicted claude session {}", session_key)
 
     async def evict_stale(self, idle_timeout_s: float) -> int:
@@ -265,6 +274,7 @@ class ClaudeSDKRunner(SDKRunner):
                         pass
                 self._client_locks.pop(sk, None)
                 self._last_activity.pop(sk, None)
+                self._session_models.pop(sk, None)
                 evicted += 1
         if evicted:
             logger.debug("Evicted {} stale claude clients", evicted)
@@ -281,4 +291,5 @@ class ClaudeSDKRunner(SDKRunner):
         self._clients.clear()
         self._client_locks.clear()
         self._last_activity.clear()
+        self._session_models.clear()
         logger.info("Claude SDK clients shut down")

@@ -7,6 +7,6 @@ AgentRunner. Two backends cover all target CLIs:
 - ``claude-sdk`` — Claude Code / Relay / Seed (via claude-agent-sdk)
 """
 
-from nanobot.agent.sdk_runner.base import SDKRunner, _TurnResult
+from nanobot.agent.sdk_runner.base import SDKRunner, TurnResult
 
-__all__ = ["SDKRunner", "_TurnResult"]
+__all__ = ["SDKRunner", "TurnResult"]

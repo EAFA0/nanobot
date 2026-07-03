@@ -269,7 +269,6 @@ async def cmd_new(ctx: CommandContext) -> OutboundMessage:
         with suppress(Exception):
             runner = loop._get_sdk_runner(backend)
             await runner.evict_session(ctx.key)
-        loop._session_sdk_models.pop(ctx.key, None)
 
     session = ctx.session or loop.sessions.get_or_create(ctx.key)
     snapshot = session.messages[session.last_consolidated:]
