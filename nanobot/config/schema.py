@@ -181,6 +181,7 @@ class SDKRunnerConfig(Base):
     codex_sandbox: str = "workspace_write"  # read_only | workspace_write | full_access
     codex_approval_mode: str = "auto_review"  # auto_review | deny_all
     codex_base_instructions: str | None = None
+    codex_reasoning_summary: str = "detailed"  # none | auto | concise | detailed — controls reasoning output
 
     # --- Claude SDK settings ---
     claude_cli_path: str | None = None  # Path to claude/relay/seed binary (default: find in PATH)

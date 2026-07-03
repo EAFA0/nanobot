@@ -121,6 +121,10 @@ class CodexSDKRunner(SDKRunner):
         model = session_model or config_model
         if model:
             turn_kwargs["model"] = model
+        # Enable reasoning output — "detailed" gives full reasoning text
+        reasoning_summary = getattr(self._config, "codex_reasoning_summary", "detailed")
+        if reasoning_summary:
+            turn_kwargs["summary"] = reasoning_summary
         turn = await thread.turn(prompt, **turn_kwargs)
         self._active_turns[session_key] = turn
 
@@ -141,7 +145,12 @@ class CodexSDKRunner(SDKRunner):
                         all_deltas.append(delta)
                         await on_delta(delta)
 
-                elif method == "item/reasoning/text/delta" and payload:
+                elif method == "item/reasoning/textDelta" and payload:
+                    delta = getattr(payload, "delta", "")
+                    if delta:
+                        await on_reasoning(delta)
+
+                elif method == "item/reasoning/summaryTextDelta" and payload:
                     delta = getattr(payload, "delta", "")
                     if delta:
                         await on_reasoning(delta)
