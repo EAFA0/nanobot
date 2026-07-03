@@ -233,7 +233,7 @@ class CodexSDKRunner(SDKRunner):
             server = getattr(item, "server", "")
             tool = getattr(item, "tool", "")
             args = getattr(item, "arguments", {}) or {}
-            await on_tool_start(f"mcp__{server}__{tool}", args)
+            await on_tool_start(f"mcp_{server}_{tool}", args)
 
     @staticmethod
     async def _handle_item_completed(item: Any, on_tool_end: Callable) -> str | None:
@@ -257,7 +257,7 @@ class CodexSDKRunner(SDKRunner):
             tool = getattr(item, "tool", "")
             status = getattr(item, "status", "")
             result = getattr(item, "result", "") or ""
-            name = f"mcp__{server}__{tool}"
+            name = f"mcp_{server}_{tool}"
             await on_tool_end(name, status == "completed", str(result)[:500])
             return name
         return None

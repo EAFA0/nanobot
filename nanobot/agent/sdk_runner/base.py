@@ -24,6 +24,7 @@ from loguru import logger
 from nanobot.agent.hook import AgentHookContext, AgentRunHookContext
 from nanobot.agent.runner import AgentRunResult, AgentRunSpec
 from nanobot.providers.base import ToolCallRequest
+from nanobot.utils.progress_events import invoke_file_edit_progress
 
 
 @dataclass
@@ -77,6 +78,32 @@ class SDKRunner(ABC):
         tools_used: list[str] = []
         tool_events: list[dict[str, str]] = []
         pending_tool_calls: dict[str, ToolCallRequest] = {}
+        progress_cb = spec.progress_callback
+        pending_file_edits: dict[str, list[dict[str, Any]]] = {}  # call_id → file_edit events
+
+        def _build_file_edit_events(
+            *,
+            call_id: str,
+            tool_name: str,
+            paths: list[str],
+            phase: str,
+            status: str,
+        ) -> list[dict[str, Any]]:
+            events: list[dict[str, Any]] = []
+            for p in paths:
+                events.append({
+                    "version": 1,
+                    "call_id": call_id,
+                    "tool": tool_name,
+                    "path": p,
+                    "absolute_path": p,
+                    "phase": phase,
+                    "added": 0,
+                    "deleted": 0,
+                    "approximate": True,
+                    "status": status,
+                })
+            return events
 
         async def on_delta(delta: str) -> None:
             all_text_parts.append(delta)
@@ -89,6 +116,16 @@ class SDKRunner(ABC):
             tc = ToolCallRequest(id=call_id, name=name, arguments=tool_input)
             pending_tool_calls[call_id] = tc
             tools_used.append(name)
+            # Emit file_edit events for Edit/MultiEdit so WebUI shows file cards
+            if name in ("Edit", "MultiEdit") and progress_cb:
+                paths = tool_input.get("files", []) if isinstance(tool_input, dict) else []
+                if isinstance(paths, list) and paths:
+                    events = _build_file_edit_events(
+                        call_id=call_id, tool_name=name, paths=paths,
+                        phase="start", status="editing",
+                    )
+                    pending_file_edits[call_id] = events
+                    await invoke_file_edit_progress(progress_cb, events)
             if hook:
                 iter_ctx.tool_calls = [tc]
                 iter_ctx.tool_results = []
@@ -106,6 +143,17 @@ class SDKRunner(ABC):
             status = "ok" if success else "error"
             event = {"name": name, "status": status, "call_id": tc.id}
             tool_events.append(event)
+            # Emit file_edit end events for Edit/MultiEdit
+            if name in ("Edit", "MultiEdit") and progress_cb:
+                paths = (tc.arguments or {}).get("files", []) if isinstance(tc.arguments, dict) else []
+                if isinstance(paths, list) and paths:
+                    fe_status = "done" if success else "error"
+                    events = _build_file_edit_events(
+                        call_id=tc.id, tool_name=name, paths=paths,
+                        phase="end", status=fe_status,
+                    )
+                    pending_file_edits.pop(tc.id, None)
+                    await invoke_file_edit_progress(progress_cb, events)
             if hook:
                 iter_ctx.tool_calls = [tc]
                 iter_ctx.tool_results = [

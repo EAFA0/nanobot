@@ -221,6 +221,14 @@ async def cmd_status(ctx: CommandContext) -> OutboundMessage:
         sdk_model = loop.get_session_sdk_model(ctx.key)
         if sdk_model:
             display_model = sdk_model
+        else:
+            # No per-session override — show config-level SDK model, or "(binary default)"
+            sdk_cfg = getattr(loop, "_sdk_runner_config", None)
+            if backend_name == "codex-sdk":
+                cfg_model = getattr(sdk_cfg, "codex_model", None) if sdk_cfg else None
+            else:
+                cfg_model = getattr(sdk_cfg, "claude_model", None) if sdk_cfg else None
+            display_model = cfg_model or "(binary default)"
 
     # Fetch web search provider usage (best-effort, never blocks the response)
     search_usage_text: str | None = None
