@@ -441,7 +441,7 @@ class TestSDKRunnerConfig:
         assert cfg.codex_sandbox == "workspace_write"
         assert cfg.codex_approval_mode == "auto_review"
         assert cfg.codex_base_instructions is None
-        assert cfg.claude_model == "claude-sonnet-4-5"
+        assert cfg.claude_model is None
         assert cfg.claude_permission_mode == "acceptEdits"
         assert cfg.claude_api_key is None
         assert cfg.claude_base_url is None

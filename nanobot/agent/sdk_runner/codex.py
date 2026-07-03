@@ -47,11 +47,13 @@ class CodexSDKRunner(SDKRunner):
                         env["HTTP_PROXY"] = proxy
 
                     codex_bin = getattr(self._config, "codex_bin", None)
-                    self._codex = AsyncCodex(config=CodexConfig(
-                        env=env or None,
+                    codex_kwargs: dict[str, Any] = dict(
                         codex_bin=codex_bin,
                         cwd=os.getcwd(),
-                    ))
+                    )
+                    if env:
+                        codex_kwargs["env"] = env
+                    self._codex = AsyncCodex(config=CodexConfig(**codex_kwargs))
                     await self._codex.__aenter__()
                     logger.info("Codex SDK client initialized")
         return self._codex

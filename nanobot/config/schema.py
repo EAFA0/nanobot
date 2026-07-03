@@ -184,7 +184,7 @@ class SDKRunnerConfig(Base):
 
     # --- Claude SDK settings ---
     claude_cli_path: str | None = None  # Path to claude/relay/seed binary (default: find in PATH)
-    claude_model: str = "claude-sonnet-4-5"
+    claude_model: str | None = None  # Default: use binary's built-in model
     claude_permission_mode: str = "acceptEdits"  # default | acceptEdits | plan | bypassPermissions | dontAsk | auto
     claude_api_key: str | None = None  # falls back to ANTHROPIC_API_KEY env
     claude_base_url: str | None = None  # falls back to ANTHROPIC_BASE_URL env

@@ -55,16 +55,24 @@ class ClaudeSDKRunner(SDKRunner):
                 if base_url:
                     env["ANTHROPIC_BASE_URL"] = base_url
 
-                options = ClaudeAgentOptions(
-                    model=getattr(self._config, "claude_model", "claude-sonnet-4-5"),
+                options_kwargs: dict[str, Any] = dict(
                     cwd=cwd,
                     permission_mode=getattr(self._config, "claude_permission_mode", "acceptEdits"),
-                    env=env or None,
                     include_partial_messages=True,
                     max_turns=getattr(self._config, "claude_max_turns", 200),
-                    system_prompt=getattr(self._config, "claude_system_prompt", None),
-                    cli_path=getattr(self._config, "claude_cli_path", None),
                 )
+                config_model = getattr(self._config, "claude_model", None)
+                if config_model:
+                    options_kwargs["model"] = config_model
+                system_prompt = getattr(self._config, "claude_system_prompt", None)
+                if system_prompt:
+                    options_kwargs["system_prompt"] = system_prompt
+                cli_path = getattr(self._config, "claude_cli_path", None)
+                if cli_path:
+                    options_kwargs["cli_path"] = cli_path
+                if env:
+                    options_kwargs["env"] = env
+                options = ClaudeAgentOptions(**options_kwargs)
                 client = ClaudeSDKClient(options=options)
                 await client.__aenter__()
                 self._clients[session_key] = client
