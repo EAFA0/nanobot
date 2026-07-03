@@ -940,6 +940,11 @@ class AgentLoop:
                 runner = self.runner
             else:
                 runner = self._get_sdk_runner(runner_backend)
+                # Restore codex thread_id for cross-restart resume
+                if runner_backend == "codex-sdk" and session is not None:
+                    saved_tid = session.metadata.get("codex_thread_id")
+                    if saved_tid and runner.get_thread_id(active_session_key) is None:
+                        runner.set_thread_id(active_session_key, saved_tid)
             result = await runner.run(AgentRunSpec(
                 initial_messages=initial_messages,
                 tools=tools or self.tools,
@@ -980,6 +985,11 @@ class AgentLoop:
             reset_request_context(request_token)
             reset_file_states(file_state_token)
         self._last_usage = result.usage
+        # Persist codex thread_id for cross-restart resume
+        if runner_backend == "codex-sdk" and session is not None:
+            tid = runner.get_thread_id(active_session_key)
+            if tid:
+                session.metadata["codex_thread_id"] = tid
         if result.stop_reason == "max_iterations":
             logger.warning("Max iterations ({}) reached", self.max_iterations)
             should_stream = turn_continuation.should_stream_budget_response(

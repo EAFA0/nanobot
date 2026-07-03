@@ -25,6 +25,7 @@ class CodexSDKRunner(SDKRunner):
         self._codex: Any = None  # AsyncCodex
         self._codex_lock = asyncio.Lock()
         self._threads: dict[str, Any] = {}  # session_key → Thread
+        self._thread_ids: dict[str, str] = {}  # session_key → thread_id (for cross-restart resume)
         self._active_turns: dict[str, Any] = {}  # session_key → TurnHandle
         self._last_activity: dict[str, float] = {}
         self._session_models: dict[str, str] = {}  # session_key → model override
@@ -75,32 +76,43 @@ class CodexSDKRunner(SDKRunner):
 
         thread = self._threads.get(session_key)
         if thread is None:
-            sandbox_name = getattr(self._config, "codex_sandbox", "workspace_write")
-            approval_name = getattr(self._config, "codex_approval_mode", "auto_review")
-            base_instructions = getattr(self._config, "codex_base_instructions", None)
-            agents_md = self._load_agents_md(cwd)
-            if agents_md:
-                merged = f"# AGENTS.md\n\n{agents_md}"
-                if base_instructions:
-                    merged = f"{base_instructions}\n\n---\n\n{merged}"
-                base_instructions = merged
+            saved_thread_id = self._thread_ids.get(session_key)
+            if saved_thread_id:
+                # Resume a previously-known thread (e.g. after process restart)
+                thread = await codex.thread_resume(saved_thread_id, cwd=cwd)
+                self._threads[session_key] = thread
+                logger.debug("Resumed codex thread {} for session {}", saved_thread_id, session_key)
+            else:
+                sandbox_name = getattr(self._config, "codex_sandbox", "workspace_write")
+                approval_name = getattr(self._config, "codex_approval_mode", "auto_review")
+                base_instructions = getattr(self._config, "codex_base_instructions", None)
+                agents_md = self._load_agents_md(cwd)
+                if agents_md:
+                    merged = f"# AGENTS.md\n\n{agents_md}"
+                    if base_instructions:
+                        merged = f"{base_instructions}\n\n---\n\n{merged}"
+                    base_instructions = merged
 
-            thread_kwargs = dict(
-                sandbox=Sandbox[sandbox_name],
-                approval_mode=ApprovalMode[approval_name],
-                cwd=cwd,
-                base_instructions=base_instructions,
-            )
-            # Only pass model if explicitly configured — let the codex binary use its own default.
-            # Note: we ignore the `model` param from _run_turn because that comes from the native
-            # provider config (e.g. "minimax-m3") and is not a valid codex model.
-            config_model = getattr(self._config, "codex_model", None)
-            if config_model:
-                thread_kwargs["model"] = config_model
+                thread_kwargs = dict(
+                    sandbox=Sandbox[sandbox_name],
+                    approval_mode=ApprovalMode[approval_name],
+                    cwd=cwd,
+                    base_instructions=base_instructions,
+                )
+                # Only pass model if explicitly configured — let the codex binary use its own default.
+                # Note: we ignore the `model` param from _run_turn because that comes from the native
+                # provider config (e.g. "minimax-m3") and is not a valid codex model.
+                config_model = getattr(self._config, "codex_model", None)
+                if config_model:
+                    thread_kwargs["model"] = config_model
 
-            thread = await codex.thread_start(**thread_kwargs)
-            self._threads[session_key] = thread
-            logger.debug("Created new codex thread for session {}", session_key)
+                thread = await codex.thread_start(**thread_kwargs)
+                self._threads[session_key] = thread
+                # Persist thread_id for cross-restart resume
+                thread_id = getattr(thread, "id", None) or getattr(thread, "thread_id", None)
+                if thread_id:
+                    self._thread_ids[session_key] = str(thread_id)
+                logger.debug("Created new codex thread for session {}", session_key)
 
         turn_kwargs = dict(cwd=cwd)
         # Per-session model override takes precedence over global config
@@ -280,6 +292,13 @@ class CodexSDKRunner(SDKRunner):
     def get_model(self, session_key: str) -> str | None:
         return self._session_models.get(session_key)
 
+    def get_thread_id(self, session_key: str) -> str | None:
+        return self._thread_ids.get(session_key)
+
+    def set_thread_id(self, session_key: str, thread_id: str) -> None:
+        """Restore a thread_id from persisted metadata (e.g. after process restart)."""
+        self._thread_ids[session_key] = thread_id
+
     async def _interrupt_turn(self, session_key: str) -> None:
         turn = self._active_turns.get(session_key)
         if turn:
@@ -291,6 +310,7 @@ class CodexSDKRunner(SDKRunner):
 
     async def evict_session(self, session_key: str) -> None:
         self._threads.pop(session_key, None)
+        self._thread_ids.pop(session_key, None)
         self._last_activity.pop(session_key, None)
         self._session_models.pop(session_key, None)
         logger.debug("Evicted codex session {}", session_key)
@@ -302,6 +322,7 @@ class CodexSDKRunner(SDKRunner):
             last = self._last_activity.get(sk, 0)
             if now - last > idle_timeout_s and sk not in self._active_turns:
                 self._threads.pop(sk, None)
+                self._thread_ids.pop(sk, None)
                 self._last_activity.pop(sk, None)
                 self._session_models.pop(sk, None)
                 evicted += 1
@@ -318,6 +339,7 @@ class CodexSDKRunner(SDKRunner):
                 logger.exception("Codex SDK shutdown error")
             self._codex = None
         self._threads.clear()
+        self._thread_ids.clear()
         self._active_turns.clear()
         self._last_activity.clear()
         self._session_models.clear()

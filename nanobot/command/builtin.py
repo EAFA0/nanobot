@@ -263,14 +263,17 @@ async def cmd_new(ctx: CommandContext) -> OutboundMessage:
     loop = ctx.loop
     await loop._cancel_active_tasks(ctx.key)
 
+    session = ctx.session or loop.sessions.get_or_create(ctx.key)
+
     # Evict SDK runner session resources (thread/client) so the next turn starts fresh
     if loop._is_sdk_backend(ctx.key):
         backend = loop._effective_runner_backend(ctx.key)
         with suppress(Exception):
             runner = loop._get_sdk_runner(backend)
             await runner.evict_session(ctx.key)
+        # Clear persisted thread_id from session metadata
+        session.metadata.pop("codex_thread_id", None)
 
-    session = ctx.session or loop.sessions.get_or_create(ctx.key)
     snapshot = session.messages[session.last_consolidated:]
     session.clear()
     loop.sessions.save(session)
