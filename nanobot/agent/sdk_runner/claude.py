@@ -108,7 +108,7 @@ class ClaudeSDKRunner(SDKRunner):
         final_content_parts: list[str] = []
         stop_reason = "completed"
         error: str | None = None
-        last_text_len = 0
+        last_full_text = ""  # full text of current segment (tracks resets after tool calls)
         pending_tool_calls: list[str] = []  # stack of tool names awaiting results
 
         try:
@@ -123,11 +123,22 @@ class ClaudeSDKRunner(SDKRunner):
                         if block_type == "TextBlock":
                             text = getattr(block, "text", "") or ""
                             if text:
-                                # Partial messages contain accumulated text; emit delta
-                                if len(text) > last_text_len:
-                                    delta = text[last_text_len:]
+                                # With --include-partial-messages, the CLI emits
+                                # multiple partial assistant messages.  Within a
+                                # single text segment, each partial contains the
+                                # accumulated text so far (text grows).  After a
+                                # tool call, the text resets to a new segment.
+                                # Detect which case we're in by checking whether
+                                # the new text starts with the previous full text.
+                                if text.startswith(last_full_text):
+                                    # Same segment: text grew; emit only new chars
+                                    delta = text[len(last_full_text):]
+                                else:
+                                    # New segment (after tool call or first text)
+                                    delta = text
+                                if delta:
                                     await on_delta(delta)
-                                last_text_len = len(text)
+                                last_full_text = text
                                 final_content_parts = [text]
                         elif block_type == "ThinkingBlock":
                             thinking = getattr(block, "thinking", "") or ""
